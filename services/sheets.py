@@ -4,6 +4,7 @@ Google Sheets サービス - Sheets API v4 を直接使用してスプレッド�
 """
 import logging
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from services.google_auth import get_credentials
 import config
 
@@ -31,8 +32,13 @@ class SheetsService:
     def __init__(self):
         credentials = get_credentials()
         self.service = build("sheets", "v4", credentials=credentials)
+        self.drive_service = build("drive", "v3", credentials=credentials)
         self.spreadsheet_id = config.SPREADSHEET_ID
         self.sheet_name = getattr(config, "SHEET_NAME", "")
+
+        # .xlsx ファイルの場合、ネイティブ Google Sheets に変換する
+        self._ensure_native_sheet()
+
         # シート名が設定で指定されていなければ自動検出を試みる
         if not self.sheet_name:
             self.sheet_name = self._resolve_sheet_name(config.SHEET_GID)
@@ -40,6 +46,46 @@ class SheetsService:
             f"スプレッドシート接続完了: ID={self.spreadsheet_id} "
             f"シート: '{self.sheet_name}'"
         )
+
+    def _ensure_native_sheet(self):
+        """
+        スプレッドシートが .xlsx 等のアップロードファイルの場合、
+        Google Sheets ネイティブ形式にコピー変換する
+        """
+        try:
+            file_info = self.drive_service.files().get(
+                fileId=self.spreadsheet_id,
+                fields="mimeType, name"
+            ).execute()
+            mime = file_info.get("mimeType", "")
+            name = file_info.get("name", "")
+
+            if mime == "application/vnd.google-apps.spreadsheet":
+                logger.info("スプレッドシートはネイティブ形式です。変換不要。")
+                return
+
+            logger.warning(
+                f"スプレッドシートがネイティブ形式ではありません (mimeType={mime})。"
+                "Google Sheets 形式にコピー変換します..."
+            )
+
+            copied = self.drive_service.files().copy(
+                fileId=self.spreadsheet_id,
+                body={
+                    "name": f"{name}（会計Bot用）",
+                    "mimeType": "application/vnd.google-apps.spreadsheet",
+                },
+            ).execute()
+
+            new_id = copied["id"]
+            logger.info(
+                f"変換完了: 新しいスプレッドシートID = {new_id}\n"
+                f"  ※ .env の SPREADSHEET_ID を更新することを推奨します"
+            )
+            self.spreadsheet_id = new_id
+
+        except Exception as e:
+            logger.warning(f"スプレッドシート形式の確認/変換に失敗: {e}")
 
     def _resolve_sheet_name(self, gid: int) -> str:
         """GID からシート名を取得する。取得できなければデフォルト名を返す"""
@@ -53,9 +99,13 @@ class SheetsService:
                 props = sheet.get("properties", {})
                 if props.get("sheetId") == gid:
                     name = props.get("title", "Sheet1")
+                    self._sheet_id = gid
                     logger.info(f"GID {gid} → シート名: '{name}'")
                     return name
-            first = meta["sheets"][0]["properties"]["title"]
+            # GIDが見つからない場合、最初のシートを使用
+            first_props = meta["sheets"][0]["properties"]
+            first = first_props["title"]
+            self._sheet_id = first_props.get("sheetId", 0)
             logger.warning(f"GID {gid} が見つかりません。最初のシート '{first}' を使用")
             return first
         except Exception as e:
@@ -128,28 +178,78 @@ class SheetsService:
             data.get("入力日", ""),
             data.get("日付", ""),
             data.get("記入者", ""),
-            data.get("勘定科目", ""),
+            "経費",
             data.get("立て替えた人", ""),
             data.get("使用用途", ""),
             income if income else "",
             expense if expense else "",
             new_balance,
-            data.get("会計Check", ""),
-            data.get("精算", ""),
+            "未",
+            "未",
         ]
 
-        range_str = self._make_range("A:K")
+        # 次の空き行を探して update で書き込む
+        next_row = self._get_next_empty_row()
+
+        # シートの行数が足りなければ自動拡張
+        self._ensure_row_capacity(next_row)
+
+        range_str = self._make_range(f"A{next_row}:K{next_row}")
         body = {"values": [row]}
 
-        self.service.spreadsheets().values().append(
+        self.service.spreadsheets().values().update(
             spreadsheetId=self.spreadsheet_id,
             range=range_str,
             valueInputOption="USER_ENTERED",
-            insertDataOption="INSERT_ROWS",
             body=body,
         ).execute()
 
         logger.info(
-            f"行を追加: 日付={data.get('日付')} "
+            f"行を追加 (行{next_row}): 日付={data.get('日付')} "
             f"出金={expense} 差引残高={new_balance}"
         )
+
+    def _get_next_empty_row(self) -> int:
+        """シートの次の空き行番号を返す（1-indexed）"""
+        try:
+            all_values = self._get_all_values()
+            return len(all_values) + 1
+        except Exception:
+            return 2  # ヘッダー行の次をデフォルトにする
+
+    def _ensure_row_capacity(self, needed_row: int) -> None:
+        """シートの行数が足りない場合、行を追加して拡張する"""
+        try:
+            meta = (
+                self.service.spreadsheets()
+                .get(spreadsheetId=self.spreadsheet_id)
+                .execute()
+            )
+            sheet_id = getattr(self, '_sheet_id', 0)
+            for sheet in meta.get("sheets", []):
+                props = sheet.get("properties", {})
+                if props.get("title") == self.sheet_name:
+                    sheet_id = props.get("sheetId", 0)
+                    max_rows = props.get("gridProperties", {}).get("rowCount", 0)
+                    break
+            else:
+                max_rows = 0
+
+            if max_rows > 0 and needed_row > max_rows:
+                add_rows = needed_row - max_rows + 100  # 余裕を持って追加
+                request_body = {
+                    "requests": [{
+                        "appendDimension": {
+                            "sheetId": sheet_id,
+                            "dimension": "ROWS",
+                            "length": add_rows,
+                        }
+                    }]
+                }
+                self.service.spreadsheets().batchUpdate(
+                    spreadsheetId=self.spreadsheet_id,
+                    body=request_body,
+                ).execute()
+                logger.info(f"シートを {add_rows} 行拡張しました (合計: {max_rows + add_rows} 行)")
+        except Exception as e:
+            logger.warning(f"シート行数の拡張に失敗: {e}")

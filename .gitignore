@@ -1,5 +1,6 @@
 # 環境設定・認証ファイル
 .env
+env
 credentials.json
 
 # Python
