@@ -100,50 +100,86 @@ class VisionService:
         return ""
 
     def _extract_amount(self, text: str) -> str:
-        """テキストから合計金額を抽出する"""
-        # 合計・計のパターンを優先的に検索
-        total_patterns = [
-            r"(?:合計|お買[い上]|総[額計]|小計|計|TOTAL|Total|total)\s*[¥￥]?\s*([\d,]+)",
-            r"(?:合計|お買[い上]|総[額計]|小計|計|TOTAL|Total|total)\s*:\s*[¥￥]?\s*([\d,]+)",
+        """テキストから合計金額を抽出する（お預かり・お釣りを除外）"""
+        lines = text.split("\n")
+
+        # 除外すべきキーワード（お預かり、お釣り、釣銭など）
+        exclude_keywords = [
+            "お預", "預り", "あずかり", "お釣", "釣銭", "つり",
+            "釣り", "現金", "クレジット", "カード", "CASH", "CHANGE",
+            "No.", "NO.", "no.", "登録", "電話", "POS", "レジ",
+            "担当", "番号",
         ]
-        for pattern in total_patterns:
-            matches = re.findall(pattern, text)
-            if matches:
-                # 最も大きい金額を合計とみなす
-                amounts = []
-                for m in matches:
+
+        def is_excluded_line(line: str) -> bool:
+            return any(kw in line for kw in exclude_keywords)
+
+        # 1. 「合計」「税込」等の明確な合計パターンを最優先
+        total_keywords = r"(?:合計|お買[い上]|総[額計]|税込合計|税込|TOTAL|Total|total)"
+        total_patterns = [
+            total_keywords + r"\s*[(:：]?\s*[¥￥]?\s*([\d,]+)\s*円?",
+            r"[¥￥]\s*([\d,]+)\s*" + total_keywords,
+        ]
+        for line in lines:
+            if is_excluded_line(line):
+                continue
+            for pattern in total_patterns:
+                match = re.search(pattern, line)
+                if match:
                     try:
-                        amounts.append(int(m.replace(",", "")))
+                        val = int(match.group(1).replace(",", ""))
+                        if val > 0:
+                            logger.info(f"金額検出（合計パターン）: {val} from '{line.strip()}'")
+                            return str(val)
                     except ValueError:
                         continue
-                if amounts:
-                    return str(max(amounts))
 
-        # ¥記号付きの金額
-        yen_pattern = r"[¥￥]\s*([\d,]+)"
-        matches = re.findall(yen_pattern, text)
-        if matches:
-            amounts = []
-            for m in matches:
+        # 2. 「小計」を探す（除外行でないもの）
+        for line in lines:
+            if is_excluded_line(line):
+                continue
+            match = re.search(r"小計\s*[(:：]?\s*[¥￥]?\s*([\d,]+)", line)
+            if match:
                 try:
-                    amounts.append(int(m.replace(",", "")))
+                    val = int(match.group(1).replace(",", ""))
+                    if val > 0:
+                        logger.info(f"金額検出（小計）: {val} from '{line.strip()}'")
+                        return str(val)
                 except ValueError:
                     continue
-            if amounts:
-                return str(max(amounts))
 
-        # 円付きの金額
-        en_pattern = r"([\d,]+)\s*円"
-        matches = re.findall(en_pattern, text)
-        if matches:
-            amounts = []
-            for m in matches:
+        # 3. 「円」が付いた金額（除外行でないもの）を収集し、
+        #    「お買上」「合計」に近い位置のものを優先、なければ最大値
+        yen_amounts = []
+        for line in lines:
+            if is_excluded_line(line):
+                continue
+            for m in re.findall(r"([\d,]+)\s*円", line):
                 try:
-                    amounts.append(int(m.replace(",", "")))
+                    val = int(m.replace(",", ""))
+                    if val > 0:
+                        yen_amounts.append(val)
                 except ValueError:
                     continue
-            if amounts:
-                return str(max(amounts))
+        if yen_amounts:
+            logger.info(f"金額検出（円パターン）: {max(yen_amounts)} from {yen_amounts}")
+            return str(max(yen_amounts))
+
+        # 4. ¥記号付き金額（除外行でないもの）から最大値
+        yen_symbol_amounts = []
+        for line in lines:
+            if is_excluded_line(line):
+                continue
+            for m in re.findall(r"[¥￥]\s*([\d,]+)", line):
+                try:
+                    val = int(m.replace(",", ""))
+                    if val > 0:
+                        yen_symbol_amounts.append(val)
+                except ValueError:
+                    continue
+        if yen_symbol_amounts:
+            logger.info(f"金額検出（¥パターン）: {max(yen_symbol_amounts)} from {yen_symbol_amounts}")
+            return str(max(yen_symbol_amounts))
 
         return ""
 
