@@ -30,13 +30,6 @@ class AccountingModal(discord.ui.Modal, title="会計申請フォーム"):
         max_length=20,
         style=discord.TextStyle.short,
     )
-    category_input = discord.ui.TextInput(
-        label="勘定科目",
-        placeholder="例: 消耗品費、交通費、会議費、通信費",
-        required=True,
-        max_length=50,
-        style=discord.TextStyle.short,
-    )
     payer_input = discord.ui.TextInput(
         label="立て替えた人",
         placeholder="名前を入力",
@@ -68,8 +61,6 @@ class AccountingModal(discord.ui.Modal, title="会計申請フォーム"):
         if defaults:
             if defaults.get("date"):
                 self.date_input.default = defaults["date"]
-            if defaults.get("category"):
-                self.category_input.default = defaults["category"]
             if defaults.get("payer"):
                 self.payer_input.default = defaults["payer"]
             if defaults.get("purpose"):
@@ -117,7 +108,7 @@ class AccountingModal(discord.ui.Modal, title="会計申請フォーム"):
             "入力日": today,
             "日付": self.date_input.value,
             "記入者": author,
-            "勘定科目": self.category_input.value,
+            "勘定科目": "経費",
             "立て替えた人": self.payer_input.value,
             "使用用途": self.purpose_input.value,
             "入金": 0,
@@ -143,7 +134,7 @@ class AccountingModal(discord.ui.Modal, title="会計申請フォーム"):
             timestamp=datetime.now(),
         )
         embed.add_field(name="日付（支払日）", value=self.date_input.value, inline=True)
-        embed.add_field(name="勘定科目", value=self.category_input.value, inline=True)
+        embed.add_field(name="勘定科目", value="経費", inline=True)
         embed.add_field(name="立て替えた人", value=self.payer_input.value, inline=True)
         embed.add_field(name="使用用途", value=self.purpose_input.value, inline=False)
         embed.add_field(name="出金額", value=f"¥{amount:,}", inline=True)

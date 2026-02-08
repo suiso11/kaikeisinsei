@@ -80,6 +80,25 @@ pip install -r requirements.txt
 python bot.py
 ```
 
+### 8. 常時起動（systemd サービス化）
+
+PC起動時に自動起動し、クラッシュ時も自動再起動するよう設定できます。
+
+```bash
+sudo cp kaikei-bot.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable kaikei-bot.service
+sudo systemctl start kaikei-bot.service
+```
+
+| 操作 | コマンド |
+|---|---|
+| 状態確認 | `sudo systemctl status kaikei-bot` |
+| 停止 | `sudo systemctl stop kaikei-bot` |
+| 再起動 | `sudo systemctl restart kaikei-bot` |
+| ログ確認 | `journalctl -u kaikei-bot -f` |
+| 自動起動を無効化 | `sudo systemctl disable kaikei-bot` |
+
 ## 使い方
 
 ### 方法1: レシート画像を送信
